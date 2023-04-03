@@ -1,11 +1,10 @@
-/* SPDX-License-Identifier: MIT */
-#include <infos/util/lock.h>
-#include <infos/util/string.h>
-#include <arch/x86/pio.h>
-#include <infos/kernel/kernel.h>
+#include <infos/drivers/ata/page-cache.h>
 #include <infos/drivers/ata/ata-device.h>
 #include <infos/drivers/ata/ata-controller.h>
 #include <infos/drivers/block/block-device.h>
+#include <infos/util/lock.h>
+#include <infos/util/string.h>
+#include <arch/x86/pio.h>
 
 using namespace infos::kernel;
 using namespace infos::drivers;
@@ -74,9 +73,10 @@ bool LRUCache::read(void* buffer, size_t offset)
     }
 
     // Copy block contents into buffer
-    memcpy(buffer, current_block->contents, BLOCK_SIZE);
+    memcpy(buffer, &current_block->contents, BLOCK_SIZE);
     return true;
 }
+
 void LRUCache::put(void* contents, size_t offset) 
 {
     assert(contents);
@@ -92,7 +92,7 @@ void LRUCache::put(void* contents, size_t offset)
         // Overwrite the last block memory with the given contents
         Block* last_block = last;
         last_block->id = offset;
-        memcpy(last_block->contents, contents, BLOCK_SIZE);
+        memcpy(&last_block->contents, contents, BLOCK_SIZE);
 
         if (MAX_SIZE > 1)
         {
@@ -105,14 +105,15 @@ void LRUCache::put(void* contents, size_t offset)
             first = last_block;
         }
     } 
+
     else 
     {
         // Create a new block and store it first
         Block* new_block = new Block();
         new_block->id = offset;
-        new_block->contents = new uint8_t[BLOCK_SIZE];
+        new_block->contents = *(new uint8_t[BLOCK_SIZE]);
         new_block->prev_block = nullptr;
-        memcpy(new_block->contents, contents, BLOCK_SIZE);
+        memcpy(&new_block->contents, contents, BLOCK_SIZE);
 
         // If the cache is empty, new block is both first and last
         if (!first) 
