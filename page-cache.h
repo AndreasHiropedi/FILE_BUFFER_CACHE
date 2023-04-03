@@ -1,6 +1,4 @@
-/* SPDX-License-Identifier: MIT */
 #pragma once
-
 #include <infos/util/lock.h>
 #include <infos/util/string.h>
 #include <arch/x86/pio.h>
@@ -16,22 +14,20 @@ namespace infos
         namespace ata
         {
             struct Block {
-                    size_t id;
-                    uint8_t contents;
-                    Block next_block;
-                    Block prev_block;
-                };
+                size_t id;
+                uint8_t contents;
+                Block* next_block;
+                Block* prev_block;
+            };
+
             class LRUCache {
                 public:
                     void init();
-
                     bool read(void* buffer, size_t offset);
-
                     void put(void* contents, size_t offset);
-
                 private:
-                    Block first = nullptr;
-                    Block last = nullptr;
+                    Block* first = nullptr;
+                    Block* last = nullptr;
                     uint16_t size= 0;
             };
         }
