@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT /
+/* SPDX-License-Identifier: MIT */
 #pragma once
 
 #include <infos/util/lock.h>
@@ -19,7 +19,7 @@ namespace infos
                     size_t id;
                     uint8_t contents;
                     Block next_block;
-                    Blockprev_block;
+                    Block prev_block;
                 };
             class LRUCache {
                 public:
@@ -31,7 +31,7 @@ namespace infos
 
                 private:
                     Block first = nullptr;
-                    Blocklast = nullptr;
+                    Block last = nullptr;
                     uint16_t size= 0;
             };
         }
