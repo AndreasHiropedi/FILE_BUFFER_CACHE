@@ -8,6 +8,7 @@
  * 
  * Tom Spink <tspink@inf.ed.ac.uk>
  */
+#include <infos/drivers/ata/page-cache.h>
 #include <infos/drivers/ata/ata-controller.h>
 #include <infos/drivers/ata/ata-device.h>
 #include <infos/util/lock.h>
