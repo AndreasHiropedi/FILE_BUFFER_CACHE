@@ -16,23 +16,24 @@ namespace infos
         namespace ata
         {
             struct Block {
-                    size_t id;
-                    uint8_t* contents;
-                    Block* next_block;
-                    Block* prev_block;
-                };
-            class LRUCache {
+                size_t ID;
+                uint8_t* content;
+                Block* next;
+                Block* prev;
+            };
+
+            class Cache {
                 public:
-                    void init();
+                    void initialise();
 
-                    bool read(void* buffer, size_t offset);
+                    bool retrieve(void* buffer, size_t offset);
 
-                    void put(void* contents, size_t offset);
+                    void insert(void* contents, size_t offset);
 
                 private:
-                    Block* first = nullptr;
-                    Block* last = nullptr;
-                    uint16_t size= 0;
+                    Block* first_elem = NULL;
+                    Block* last_elem = NULL;
+                    uint16_t cache_size = 0;
             };
         }
     }
