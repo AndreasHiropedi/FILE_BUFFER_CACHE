@@ -16,7 +16,7 @@ namespace infos
         namespace ata
         {
             struct Block {
-                size_t ID;
+                size_t block_num;
                 uint8_t* content;
                 Block* next;
                 Block* prev;
