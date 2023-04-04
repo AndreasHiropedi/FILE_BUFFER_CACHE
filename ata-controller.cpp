@@ -1,193 +1,225 @@
 /* SPDX-License-Identifier: MIT */
 
 /*
- * drivers/ata/ata-controller.cpp
+ * drivers/ata/ata-device.cpp
  * 
  * InfOS
  * Copyright (C) University of Edinburgh 2016.  All Rights Reserved.
  * 
  * Tom Spink <tspink@inf.ed.ac.uk>
  */
-#include <infos/drivers/ata/page-cache.h>
-#include <infos/drivers/ata/ata-controller.h>
 #include <infos/drivers/ata/ata-device.h>
-#include <infos/util/lock.h>
+#include <infos/drivers/ata/ata-controller.h>
+#include <infos/drivers/ata/page-cache.h>
+#include <infos/drivers/ata/page-cache-2.h>
 #include <infos/kernel/kernel.h>
+#include <infos/util/lock.h>
+#include <infos/util/string.h>
 #include <arch/x86/pio.h>
 
+using namespace infos::kernel;
 using namespace infos::drivers;
 using namespace infos::drivers::ata;
-using namespace infos::kernel;
-using namespace infos::arch::x86;
+using namespace infos::drivers::block;
 using namespace infos::util;
+using namespace infos::arch::x86;
 
-ComponentLog infos::drivers::ata::ata_log(syslog, "ata");
+const DeviceClass ATADevice::ATADeviceClass(BlockDevice::BlockDeviceClass, "ata");
 
-DeviceClass ATAController::ATAControllerDeviceClass(Device::RootDeviceClass, "atactl");
 
-#define PORT_OR_BASE_ADDRESS(__v, __p) ((__v == 0) ? (__p) : (__v & ~3))
-
-ATAController::ATAController(IRQ& irq, const ATAControllerConfiguration& cfg) : _irq(irq)
+ATADevice::ATADevice(ATAController& controller, int channel, int drive)
+: _ctrl(controller),
+_channel(channel & 1),
+_drive(drive & 1)
 {
-	channels[ATA_PRIMARY].base = PORT_OR_BASE_ADDRESS(cfg.BAR[0], 0x1F0);
-	channels[ATA_PRIMARY].ctrl = PORT_OR_BASE_ADDRESS(cfg.BAR[1], 0x3F6);
-	channels[ATA_SECONDARY].base = PORT_OR_BASE_ADDRESS(cfg.BAR[2], 0x170);
-	channels[ATA_SECONDARY].ctrl = PORT_OR_BASE_ADDRESS(cfg.BAR[3], 0x376);
 
-	channels[ATA_PRIMARY].bmide = (cfg.BAR[4] & ~3);
-	channels[ATA_SECONDARY].bmide = (cfg.BAR[4] & ~3) + 8;
-
-	channels[ATA_PRIMARY].nIEN = 2;
-	channels[ATA_SECONDARY].nIEN = 2;
 }
 
-bool ATAController::init(kernel::DeviceManager& dm)
+bool ATADevice::init(kernel::DeviceManager& dm)
 {
-	ata_log.messagef(LogLevel::INFO, "Initialising ATA storage device Status=%u", ata_read(0, ATA_REG_STATUS));
+	uint8_t *buffer = new uint8_t[128 * 4];
+	if (!buffer)
+		return false;
 
-	// Disable interrupts
-	ata_write(ATA_PRIMARY, ATA_REG_CONTROL, 2);
-	ata_write(ATA_SECONDARY, ATA_REG_CONTROL, 2);
+	ata_read_buffer(ATA_REG_DATA, buffer, 128 * 4);
 
-	//UniqueLock<IRQLock> l(IRQLock::Instance);
+	_signature = *(uint16_t *) (buffer + ATA_IDENT_DEVICETYPE);
+	_caps = *(uint16_t *) (buffer + ATA_IDENT_CAPABILITIES);
+	_cmdsets = *(uint32_t *) (buffer + ATA_IDENT_COMMANDSETS);
 
-	bool success = true;
-	for (int channel = 0; channel < 2; channel++) {
-		success &= probe_channel(dm, channel);
+	if (_cmdsets & (1 << 26)) {
+		_size = *(uint32_t *) (buffer + ATA_IDENT_MAX_LBA_EXT);
+	} else {
+		_size = *(uint32_t *) (buffer + ATA_IDENT_MAX_LBA);
 	}
 
-	return success;
+	char model[41];
+	for (int i = 0; i < 40; i += 2) {
+		model[i] = buffer[ATA_IDENT_MODEL + i + 1];
+		model[i + 1] = buffer[ATA_IDENT_MODEL + i];
+	}
+
+	for (int i = 40; i > 0; i--) {
+		model[i] = 0;
+		if (model[i - 1] != ' ') break;
+	}
+
+	ata_log.messagef(LogLevel::DEBUG, "model=%s, size=%u, caps=%x", model, _size, _caps);
+
+	sys.mm().objalloc().free(buffer);
+
+	if ((_caps & 0x200) == 0) {
+		ata_log.messagef(LogLevel::ERROR, "drive does not support lba addressing mode");
+		return false;
+	}
+	_cache.init();
+	
+	return check_for_partitions();
 }
 
-bool ATAController::probe_channel(kernel::DeviceManager& dm, int channel)
+bool ATADevice::check_for_partitions()
 {
-	bool success = true;
-	for (int slave = 0; slave < 2; slave++) {
-		success &= probe_device(dm, channel, slave);
-	}
-
-	return true;
-}
-
-bool ATAController::probe_device(kernel::DeviceManager& dm, int channel, int device)
-{
-	ata_log.messagef(LogLevel::DEBUG, "Probing device %d:%d", channel, device);
-
-	ata_write(channel, ATA_REG_HDDEVSEL, 0xa0 | (device << 4));
-	sys.spin_delay(Milliseconds(1));
-
-	ata_write(channel, ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
-	sys.spin_delay(Milliseconds(1));
-
-	if (ata_read(channel, ATA_REG_STATUS) == 0) return true;
-
-	while (true) {
-		uint8_t status = ata_read(channel, ATA_REG_STATUS);
-		if (status & ATA_SR_ERR) {
-			ata_log.message(LogLevel::ERROR, "ATA device error");
-			return false;
-		}
-
-		if (!(status & ATA_SR_BSY) && (status & ATA_SR_DRQ)) {
-			break;
-		}
-	}
-
-	ata_log.messagef(LogLevel::INFO, "Found ATA device");
-
-	ATADevice *dev = new ATADevice(*this, channel, device);
-	if (!dm.register_device(*dev)) {
-		delete dev;
+	uint8_t *buffer = new uint8_t[512];
+	if (!buffer)
+		return false;
+	
+	if (!read_blocks(buffer, 0, 1)) {
+		sys.mm().objalloc().free(buffer);
 		return false;
 	}
 	
-	return true;
-}
-
-uint8_t ATAController::ata_read(int channel, int reg)
-{
-	uint8_t result = 0;
-	if (reg > 0x07 && reg < 0x0C) {
-		ata_write(channel, ATA_REG_CONTROL, 0x80 | channels[channel].nIEN);
+	bool result = true;
+	if (buffer[0x1fe] == 0x55 && buffer[0x1ff] == 0xaa) {
+		ata_log.messagef(LogLevel::INFO, "disk has partitions!");
+		result = create_partitions(buffer);
 	}
-
-	if (reg < 0x08) {
-		result = __inb(channels[channel].base + reg - 0x00);
-	} else if (reg < 0x0C) {
-		result = __inb(channels[channel].base + reg - 0x06);
-	} else if (reg < 0x0E) {
-		result = __inb(channels[channel].ctrl + reg - 0x0A);
-	} else if (reg < 0x16) {
-		result = __inb(channels[channel].bmide + reg - 0x0E);
-	}
-
-	if (reg > 0x07 && reg < 0x0C) {
-		ata_write(channel, ATA_REG_CONTROL, channels[channel].nIEN);
-	}
-
+	
+	sys.mm().objalloc().free(buffer);
 	return result;
 }
 
-void ATAController::ata_read_buffer(int channel, int reg, void* buffer, size_t size)
+bool ATADevice::create_partitions(const uint8_t* partition_table)
 {
-	if (reg > 0x07 && reg < 0x0C) {
-		ata_write(channel, ATA_REG_CONTROL, 0x80 | channels[channel].nIEN);
+	struct partition_table_entry {
+		uint8_t status;
+		uint8_t first_absolute_sector[3];
+		uint8_t type;
+		uint8_t last_absolute_sector[3];
+		uint32_t first_absolute_sector_lba;
+		uint32_t nr_sectors;
+	} __packed;
+		
+	for (int partition_table_index = 0; partition_table_index < 4; partition_table_index++) {
+		const struct partition_table_entry *pte = (const partition_table_entry *)&partition_table[0x1be + (16 * partition_table_index)];
+		
+		if (pte->type == 0) {
+			ata_log.messagef(LogLevel::INFO, "partition %u inactive", partition_table_index);
+			continue;
+		}
+		
+		ata_log.messagef(LogLevel::INFO, "partition %u active @ off=%x, sz=%x", partition_table_index, pte->first_absolute_sector, pte->nr_sectors);
+		
+		auto partition_device = new infos::drivers::block::BlockDevicePartition(*this, pte->first_absolute_sector_lba, pte->nr_sectors);
+		_partitions.append(partition_device);
+
+		sys.device_manager().register_device(*partition_device);
+
+		String partition_name = name() + "p" + ToString(partition_table_index);
+		sys.device_manager().add_device_alias(partition_name, *partition_device);
 	}
 	
-	if (reg < 0x08) {
-		__insl(channels[channel].base + reg - 0x00, (uintptr_t)buffer, size >> 2);
-	} else if (reg < 0x0C) {
-		__insl(channels[channel].base + reg - 0x06, (uintptr_t)buffer, size >> 2);
-	} else if (reg < 0x0E) {
-		__insl(channels[channel].ctrl + reg - 0x0A, (uintptr_t)buffer, size >> 2);
-	} else if (reg < 0x16) {
-		__insl(channels[channel].bmide + reg - 0x0E, (uintptr_t)buffer, size >> 2);
-	}
-	
-	if (reg > 0x07 && reg < 0x0C) {
-		ata_write(channel, ATA_REG_CONTROL, channels[channel].nIEN);
-	}
+	return true;
 }
 
-void ATAController::ata_write(int channel, int reg, uint8_t data)
+size_t ATADevice::block_count() const
 {
-	if (reg > 0x07 && reg < 0x0C) {
-		ata_write(channel, ATA_REG_CONTROL, 0x80 | channels[channel].nIEN);
-	}
-
-	if (reg < 0x08) {
-		__outb(channels[channel].base + reg - 0x00, data);
-	} else if (reg < 0x0C) {
-		__outb(channels[channel].base + reg - 0x06, data);
-	} else if (reg < 0x0E) {
-		__outb(channels[channel].ctrl + reg - 0x0A, data);
-	} else if (reg < 0x16) {
-		__outb(channels[channel].bmide + reg - 0x0E, data);
-	}
-
-	if (reg > 0x07 && reg < 0x0C) {
-		ata_write(channel, ATA_REG_CONTROL, channels[channel].nIEN);
-	}
+	return _size;
 }
 
-int ATAController::ata_poll(int channel, bool error_check)
+size_t ATADevice::block_size() const
 {
-	sys.spin_delay(Nanoseconds(400));
-	
-	while (ata_read(channel, ATA_REG_STATUS) & ATA_SR_BSY) asm volatile("pause");
+	return 512;
+}
 
-	if (error_check) {
-		uint8_t status = ata_read(channel, ATA_REG_STATUS);
+bool ATADevice::read_blocks(void* buffer, size_t offset, size_t count)
+{
+	assert(offset >= 0);
 
-		if (status & ATA_SR_ERR)
-		   return 2;
+	// Try reading from the cache
+	if (_cache.read(buffer, offset))
+	{
+		// Return if cache hit
+		return true;
+	}
+	// If cache miss, try transferring from the device
+	if (!transfer(0, offset, buffer, count))
+	{
+		return false;
+	}
+	// Finally add the new block into the cache
+	_cache.put(buffer, offset);
+	return true;
+}
 
-		if (status & ATA_SR_DF)
-		   return 1; // Device Fault.
+bool ATADevice::write_blocks(const void* buffer, size_t offset, size_t count)
+{
+	return transfer(1, offset, (void *) buffer, count);
+}
 
-		if ((status & ATA_SR_DRQ) == 0)
-		   return 3;
+uint8_t ATADevice::ata_read(int reg)
+{
+	return _ctrl.ata_read(_channel, reg);
+}
+
+void ATADevice::ata_read_buffer(int reg, void* buffer, size_t size)
+{
+	return _ctrl.ata_read_buffer(_channel, reg, buffer, size);
+}
+
+void ATADevice::ata_write(int reg, uint8_t data)
+{
+	_ctrl.ata_write(_channel, reg, data);
+}
+
+int ATADevice::ata_poll(bool error_check)
+{
+	return _ctrl.ata_poll(_channel, error_check);
+}
+
+bool ATADevice::transfer(int direction, uint64_t lba, void* buffer, size_t nr_blocks)
+{
+	UniqueLock<Mutex> l(_ctrl._mtx[_channel]);
+
+	while (ata_read(ATA_REG_STATUS) & ATA_SR_BSY) asm volatile("pause");
+
+	ata_write(ATA_REG_HDDEVSEL, 0xE0 | (_drive << 4));
+
+	ata_write(ATA_REG_SECCOUNT1, 0);
+	ata_write(ATA_REG_LBA3, (lba >> 24) & 0xff);
+	ata_write(ATA_REG_LBA4, (lba >> 32) & 0xff);
+	ata_write(ATA_REG_LBA5, (lba >> 40) & 0xff);
+
+	ata_write(ATA_REG_SECCOUNT0, nr_blocks);
+	ata_write(ATA_REG_LBA0, (lba >> 0) & 0xff);
+	ata_write(ATA_REG_LBA1, (lba >> 8) & 0xff);
+	ata_write(ATA_REG_LBA2, (lba >> 16) & 0xff);
+
+	if (direction) {
+		ata_write(ATA_REG_COMMAND, ATA_CMD_WRITE_PIO_EXT);
+	} else {
+		ata_write(ATA_REG_COMMAND, ATA_CMD_READ_PIO_EXT);
+
+		uint8_t *p = (uint8_t *) buffer;
+		for (size_t cur_block = 0; cur_block < nr_blocks; cur_block++) {
+			if (ata_poll(true)) {
+				return false;
+			}
+			
+			__insw(_ctrl.channels[_channel].base, (uintptr_t)p, (512 / 2));
+
+			p += 512;
+		}
 	}
 
-	return 0; // No Error.
+	return true;
 }
