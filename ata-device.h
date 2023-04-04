@@ -1,11 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 #pragma once
 
-
 #include <infos/drivers/block/block-device.h>
 #include <infos/drivers/block/block-device-partition.h>
 #include <infos/drivers/ata/page-cache.h>
-#include <infos/drivers/ata/page-cache-2.h>
 #include <infos/util/list.h>
 
 namespace infos {
@@ -33,7 +31,7 @@ namespace infos {
             private:
                 ATAController& _ctrl;
                 int _channel, _drive;
-                LRUCache _cache;
+                Cache cache;
 
                 uint32_t _signature, _caps, _cmdsets, _size;
 
@@ -52,3 +50,4 @@ namespace infos {
         }
     }
 }
+ 
