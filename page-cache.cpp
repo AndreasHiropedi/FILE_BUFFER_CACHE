@@ -15,123 +15,134 @@ using namespace infos::util;
 using namespace infos::arch::x86;
 
 
-#define BLOCK_SIZE   512
-#define MAX_SIZE   64
+#define TOTAL_BLOCKS 512
+#define MAXIMUM_CACHE_SIZE 64
 
 
-void LRUCache::init() 
+void Cache::initialise() 
 {
-    first = nullptr;
-    last = nullptr;
-    size = 0;
+    first_elem = NULL;
+    last_elem = NULL;
+    cache_size = 0;
 }
 
-bool LRUCache::read(void* buffer, size_t offset) 
+bool Cache::retrieve(void* buffer, size_t offset) 
 {
-    assert(offset >= 0);
+    // ensure the function parameters are correct
     assert(buffer);
-    assert(size <= MAX_SIZE);
-    assert(size >= 0);
+    assert(offset >= 0);
+    // ensure the cache size is within the correct range
+    assert(cache_size <= MAXIMUM_CACHE_SIZE);
+    assert(cache_size >= 0);
 
-    // Return immediately if the block is not in the cache.
-    if (size == 0) 
+    // if the cache is populated
+    if (cache_size > 0) 
     {
+        // ensure the first and last element in the cache are defined
+        assert(first_elem);
+        assert(last_elem);
+
+        // Search the cache for the block
+        Block* curr_block = first_elem;
+        while(curr_block && curr_block->block_num != offset) 
+        {
+            curr_block = curr_block->next;
+        }
+
+        // if the block is found, move it to front of LRU list
+        if (curr_block) 
+        {
+            // If it's the last block
+            if ((curr_block != first_elem) && (curr_block == last_elem))
+            {
+                last_elem = last_elem->prev;
+            }
+            // If it's not the first
+            else if (curr_block != first_elem)
+            {
+                curr_block->next->prev = curr_block->prev;
+                curr_block->prev->next = curr_block->next;
+                curr_block->prev = NULL;
+                curr_block->next = first_elem;
+                first_elem->prev = curr_block;
+                first_elem = curr_block;
+            }
+
+            // Copy the block contents into the buffer
+            memcpy(buffer, curr_block->content, TOTAL_BLOCKS);
+            return true;
+        }
+
+        // If the block is not found, return false
         return false;
     }
 
-    assert(first);
-    assert(last);
-
-    // Search for block with matching ID
-    Block* current_block = first;
-    while(current_block && current_block->id != offset) 
-    {
-        current_block = current_block->next_block;
-    }
-
-    // If block not found, return false
-    if (!current_block) 
-    {
-        return false;
-    }
-
-    // Move accessed block to front of LRU list
-    if (current_block != first) 
-    {
-        if (current_block == last) 
-        {
-            last = last->prev_block;
-        }
-        else 
-        {
-            current_block->next_block->prev_block = current_block->prev_block;
-        }
-        current_block->prev_block->next_block = current_block->next_block;
-        current_block->prev_block = nullptr;
-        current_block->next_block = first;
-        first->prev_block = current_block;
-        first = current_block;
-    }
-
-    // Copy block contents into buffer
-    memcpy(buffer, current_block->contents, BLOCK_SIZE);
-    return true;
+    // Return false otherwise
+    return false;
 }
-void LRUCache::put(void* contents, size_t offset) 
+
+void Cache::insert(void* contents, size_t offset) 
 {
+    // ensure the function parameters are correct
     assert(contents);
     assert(offset >= 0);
-    assert(size <= MAX_SIZE);
-    assert(size >= 0);
+    // ensure the cache size is within the correct range
+    assert(cache_size <= MAXIMUM_CACHE_SIZE);
+    assert(cache_size >= 0);
 
-    // Check if cache is full
-    if (size == MAX_SIZE) 
-    {
-        assert(last);
-
-        // Overwrite the last block memory with the given contents
-        Block* last_block = last;
-        last_block->id = offset;
-        memcpy(last_block->contents, contents, BLOCK_SIZE);
-
-        if (MAX_SIZE > 1)
-        {
-            // Move last block to the front of LRU list
-            last_block->prev_block->next_block = nullptr;
-            last = last_block->prev_block;
-            last_block->prev_block = nullptr;
-            last_block->next_block = first;
-            first->prev_block = last_block;
-            first = last_block;
-        }
-    } 
-    else 
+    // if the cache is not full
+    if (cache_size < MAXIMUM_CACHE_SIZE) 
     {
         // Create a new block and store it first
         Block* new_block = new Block();
-        new_block->id = offset;
-        new_block->contents = new uint8_t[BLOCK_SIZE];
-        new_block->prev_block = nullptr;
-        memcpy(new_block->contents, contents, BLOCK_SIZE);
+        new_block->block_num = offset;
+        new_block->content = new uint8_t[TOTAL_BLOCKS];
+        new_block->prev = NULL;
+        memcpy(new_block->content, contents, TOTAL_BLOCKS);
 
-        // If the cache is empty, new block is both first and last
-        if (!first) 
+        // If the cache is not empty, place the new block before the first one
+        if (first_elem) 
         {
-            first = new_block;
-            last = new_block;
-            new_block->next_block = nullptr;
-            new_block->prev_block = nullptr;
+            new_block->prev = NULL;
+            new_block->next = first_elem;
+            first_elem->prev = new_block;
+            first_elem = new_block;
         } 
 
-        // Else place the new block before the first one
+        // If it is empty, new block is both first and last
         else 
         {
-            new_block->prev_block = nullptr;
-            new_block->next_block = first;
-            first->prev_block = new_block;
-            first = new_block;
+            first_elem = new_block;
+            last_elem = new_block;
+            new_block->next = NULL;
+            new_block->prev = NULL;
         }
 
-        size++;
+        cache_size++;
+    } 
+
+    // if the cache is full
+    else 
+    {
+        // ensure the last element in the cache is defined
+        assert(last_elem);
+
+        // Overwrite the last block in memory with the given contents
+        Block* last_block = last_elem;
+        last_block->block_num = offset;
+        memcpy(last_block->content, contents, TOTAL_BLOCKS);
+
+        if (MAXIMUM_CACHE_SIZE > 1)
+        {
+            // Move last block to the front of LRU list
+            last_block->prev->next = NULL;
+            last_elem = last_block->prev;
+            last_block->prev = NULL;
+            last_block->next = first_elem;
+            first_elem->prev = last_block;
+            first_elem = last_block;
+        }
     }
 }
+
+
