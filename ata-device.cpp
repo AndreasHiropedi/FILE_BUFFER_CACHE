@@ -11,6 +11,7 @@
 #include <infos/drivers/ata/ata-device.h>
 #include <infos/drivers/ata/ata-controller.h>
 #include <infos/drivers/ata/page-cache.h>
+#include <infos/drivers/ata/page-cache-2.h>
 #include <infos/kernel/kernel.h>
 #include <infos/util/lock.h>
 #include <infos/util/string.h>
@@ -46,6 +47,7 @@ bool ATADevice::init(kernel::DeviceManager& dm)
 	_cmdsets = *(uint32_t *) (buffer + ATA_IDENT_COMMANDSETS);
 	// initialise the cache
 	cache.initialise();
+	cache_adv.initialise();
 
 	if (_cmdsets & (1 << 26)) {
 		_size = *(uint32_t *) (buffer + ATA_IDENT_MAX_LBA_EXT);

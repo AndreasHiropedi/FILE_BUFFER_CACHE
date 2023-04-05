@@ -19,14 +19,14 @@ using namespace infos::arch::x86;
 #define MAXIMUM_CACHE_SIZE 64
 
 
-void Cache::initialise() 
+void CacheAdv::initialise() 
 {
     first_elem = NULL;
     last_elem = NULL;
     cache_size = 0;
 }
 
-bool Cache::retrieve(void* buffer, size_t offset) 
+bool CacheAdv::retrieve(void* buffer, size_t offset) 
 {
     // ensure the function parameters are correct
     assert(buffer);
@@ -43,32 +43,15 @@ bool Cache::retrieve(void* buffer, size_t offset)
         assert(last_elem);
 
         // Search the cache for the block
-        Block* curr_block = first_elem;
+        BlockAdv* curr_block = first_elem;
         while(curr_block && curr_block->block_num != offset) 
         {
             curr_block = curr_block->next;
         }
 
-        // if the block is found, move it to front of LRU list
+        // if the block is found, copy its contents into buffer
         if (curr_block) 
         {
-            // If it's the last block
-            if ((curr_block != first_elem) && (curr_block == last_elem))
-            {
-                last_elem = last_elem->prev;
-            }
-            // If it's not the first
-            else if (curr_block != first_elem)
-            {
-                curr_block->next->prev = curr_block->prev;
-                curr_block->prev->next = curr_block->next;
-                curr_block->prev = NULL;
-                curr_block->next = first_elem;
-                first_elem->prev = curr_block;
-                first_elem = curr_block;
-            }
-
-            // Copy the block contents into the buffer
             memcpy(buffer, curr_block->content, TOTAL_BLOCK_SIZE);
             return true;
         }
@@ -81,7 +64,7 @@ bool Cache::retrieve(void* buffer, size_t offset)
     return false;
 }
 
-void Cache::insert(void* contents, size_t offset) 
+void CacheAdv::insert(void* contents, size_t offset) 
 {
     // ensure the function parameters are correct
     assert(contents);
@@ -93,21 +76,29 @@ void Cache::insert(void* contents, size_t offset)
     // if the cache is not full
     if (cache_size < MAXIMUM_CACHE_SIZE) 
     {
-        // Create a new block and store it first
-        Block* new_block = new Block();
+        // Create a new block and store it last
+        BlockAdv* new_block = new BlockAdv();
         new_block->block_num = offset;
         new_block->content = new uint8_t[TOTAL_BLOCK_SIZE];
-        new_block->prev = NULL;
+        new_block->next = NULL;
         memcpy(new_block->content, contents, TOTAL_BLOCK_SIZE);
 
-        // If the cache is not empty, place the new block before the first one
-        if (first_elem) 
+        // If the cache only has 2 elements, add the block at the end
+        if (first_elem && cache_size == 2) 
         {
-            new_block->prev = NULL;
-            new_block->next = first_elem;
-            first_elem->prev = new_block;
-            first_elem = new_block;
+            first_elem->next = last_elem;
+            BlockAdv* temp = last_elem;
+            last_elem = new_block;
+            new_block->prev = temp;
         } 
+
+        // If the cache is not empty and has more than 2 elements, place the new block at the end
+        else if (first_elem) 
+        {
+            BlockAdv* temp = last_elem;
+            last_elem = new_block;
+            new_block->prev = temp;
+        }
 
         // If it is empty, new block is both first and last
         else 
@@ -124,25 +115,27 @@ void Cache::insert(void* contents, size_t offset)
     // if the cache is full
     else 
     {
-        // ensure the last element in the cache is defined
-        assert(last_elem);
+        // ensure the first element in the cache is defined
+        assert(first_elem);
 
-        // Overwrite the last block in memory with the given contents
-        Block* last_block = last_elem;
-        last_block->block_num = offset;
-        memcpy(last_block->content, contents, TOTAL_BLOCK_SIZE);
-
+        // Overwrite the first block in memory with the given contents
+        BlockAdv* first_block = first_elem;
+        first_block->block_num = offset;
+        memcpy(first_block->content, contents, TOTAL_BLOCK_SIZE);
+        
         if (MAXIMUM_CACHE_SIZE > 1)
         {
-            // Move last block to the front of LRU list
-            last_block->prev->next = NULL;
-            last_elem = last_block->prev;
-            last_block->prev = NULL;
-            last_block->next = first_elem;
-            first_elem->prev = last_block;
-            first_elem = last_block;
+            // Shift all blocks up by 1 position
+            BlockAdv* curr_block = first_elem->next;
+            while(curr_block) 
+            {
+                BlockAdv* temp = curr_block;
+                curr_block->prev = temp;
+                curr_block = curr_block->next;
+            }
+            // and move the newly added block to the end
+            last_elem = first_elem;
+            last_elem->next = NULL;
         }
     }
 }
-
-
